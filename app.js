@@ -43,6 +43,19 @@ const DRAWERS_PER = [1, 0, 0];
 let S = load();
 let nav = { tab: 'today', jobId: null, blockMenuDate: null };
 
+/* ---------- cloud sync (Supabase) ----------
+   Whole app state lives as one JSONB row per user. Last write wins —
+   single-user shop, so the simplest sync that can't corrupt anything. */
+const SB_URL = 'https://oahgaqgvqgqsdfmbryli.supabase.co';
+const SB_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9haGdhcWd2cWdxc2RmbWJyeWxpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODEyODIyNjgsImV4cCI6MjA5Njg1ODI2OH0.SDqzs2vBXbd_lFys5-NpqbaK10iXEEtdGh0mKO6KR4A';
+const sb = window.supabase ? window.supabase.createClient(SB_URL, SB_ANON) : null;
+let session = null;
+let localOnly = !sb;       // CDN blocked → keep working off localStorage
+let cloudStatus = 'local'; // local | pending | ok | offline | setup
+let cloudStamp = null;
+let pushTimer = null;
+let authMsg = '';
+
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
@@ -50,8 +63,86 @@ function load() {
   } catch (e) { /* corrupted store falls back to defaults */ }
   return structuredClone(DEFAULT_STATE);
 }
-function save() { localStorage.setItem(STORE_KEY, JSON.stringify(S)); }
+function save() { localStorage.setItem(STORE_KEY, JSON.stringify(S)); queuePush(); }
 function uid() { return Math.random().toString(36).slice(2, 10); }
+
+function tableMissing(error) { return error && (error.code === '42P01' || error.code === 'PGRST205'); }
+
+function queuePush() {
+  if (!session) return;
+  cloudStatus = 'pending'; paintSync();
+  clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushNow, 1200);
+}
+async function pushNow() {
+  if (!session) return;
+  clearTimeout(pushTimer);
+  const stamp = new Date().toISOString();
+  try {
+    const { error } = await sb.from('app_state').upsert({ user_id: session.user.id, data: S, updated_at: stamp });
+    if (error) cloudStatus = tableMissing(error) ? 'setup' : 'offline';
+    else { cloudStatus = 'ok'; cloudStamp = stamp; }
+  } catch { cloudStatus = 'offline'; }
+  paintSync();
+}
+async function cloudLoad() {
+  try {
+    const { data, error } = await sb.from('app_state').select('data,updated_at').eq('user_id', session.user.id).maybeSingle();
+    if (error) { cloudStatus = tableMissing(error) ? 'setup' : 'offline'; return; }
+    if (data) {
+      S = Object.assign(structuredClone(DEFAULT_STATE), data.data);
+      cloudStamp = data.updated_at;
+      localStorage.setItem(STORE_KEY, JSON.stringify(S));
+      cloudStatus = 'ok';
+    } else {
+      await pushNow(); // first sign-in: this device's data becomes the cloud copy
+    }
+  } catch { cloudStatus = 'offline'; }
+}
+async function checkRemote() {
+  if (!session || cloudStatus === 'pending' || document.hidden) return;
+  try {
+    const { data, error } = await sb.from('app_state').select('updated_at').eq('user_id', session.user.id).maybeSingle();
+    if (!error && data && cloudStamp && data.updated_at > cloudStamp) { await cloudLoad(); render(); }
+    else if (!error && cloudStatus === 'offline') { cloudStatus = 'ok'; paintSync(); }
+  } catch { /* still offline */ }
+}
+async function doAuth(kind) {
+  const email = document.getElementById('li-email').value.trim();
+  const pass = document.getElementById('li-pass').value;
+  if (!email || pass.length < 6) { authMsg = 'Enter your email and a password of at least 6 characters.'; render(); return; }
+  authMsg = 'Working…'; render();
+  try {
+    if (kind === 'signup') {
+      const { data, error } = await sb.auth.signUp({ email, password: pass });
+      if (error) throw error;
+      if (!data.session) {
+        authMsg = 'Account created. Check your email for the confirmation link, then come back and tap Sign In.';
+        render(); return;
+      }
+      session = data.session;
+    } else {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password: pass });
+      if (error) throw error;
+      session = data.session;
+    }
+    authMsg = '';
+    cloudStatus = 'pending';
+    await cloudLoad();
+  } catch (e) { authMsg = e.message || 'Sign-in failed.'; }
+  render();
+}
+const SYNC_INFO = {
+  local:   ['dim',   'Local only'],
+  pending: ['amber', 'Saving…'],
+  ok:      ['green', 'Synced'],
+  offline: ['red',   'Offline — saved on phone'],
+  setup:   ['blue',  'Cloud setup needed'],
+};
+function paintSync() {
+  const dot = document.getElementById('sync-dot');
+  if (dot) { dot.className = SYNC_INFO[cloudStatus][0]; dot.title = SYNC_INFO[cloudStatus][1]; }
+}
 
 /* ---------- time helpers ---------- */
 function toMin(hhmm) { const [h, m] = hhmm.split(':').map(Number); return h * 60 + m; }
@@ -201,15 +292,40 @@ const $sub = document.getElementById('topbar-sub');
 function esc(s) { return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function render() {
+  const tabbar = document.getElementById('tabbar');
+  if (!session && !localOnly) {
+    tabbar.style.display = 'none';
+    $sub.textContent = '';
+    $view.innerHTML = renderLogin();
+    return;
+  }
+  tabbar.style.display = '';
   document.querySelectorAll('.tab').forEach(b => b.classList.toggle('active', b.dataset.tab === nav.tab));
   const sched = buildSchedule();
-  if (nav.tab === 'today') $view.innerHTML = renderToday(sched);
-  else if (nav.tab === 'week') $view.innerHTML = renderWeek(sched);
-  else if (nav.tab === 'jobs') $view.innerHTML = nav.jobId ? renderJobDetail(sched) : renderJobs(sched);
-  else $view.innerHTML = renderMore();
+  let html = '';
+  if (cloudStatus === 'setup') html += `<div class="banner">Cloud table isn't set up yet — your data is safe on this phone. Finish the one-time SQL step in Supabase.</div>`;
+  if (nav.tab === 'today') html += renderToday(sched);
+  else if (nav.tab === 'week') html += renderWeek(sched);
+  else if (nav.tab === 'jobs') html += nav.jobId ? renderJobDetail(sched) : renderJobs(sched);
+  else html += renderMore();
+  $view.innerHTML = html;
   const todaySegs = sched.byDate[todayStr()] || [];
   const planned = todaySegs.reduce((a, s) => a + (s.end - s.start), 0) / 60;
-  $sub.textContent = prettyDate(todayStr()) + (planned ? ' · ' + fmtH(planned) + ' planned' : '');
+  $sub.innerHTML = `<span id="sync-dot">&#9679;</span> ` + prettyDate(todayStr()) + (planned ? ' · ' + fmtH(planned) + ' planned' : '');
+  paintSync();
+}
+
+function renderLogin() {
+  return `<div class="card login-card">
+    <div class="big" style="margin-bottom:4px">Shop Tracker</div>
+    <div class="muted small" style="margin-bottom:14px">Sign in so your jobs and hours sync to the cloud.</div>
+    <input type="email" id="li-email" placeholder="Email" autocomplete="username" inputmode="email">
+    <input type="password" id="li-pass" placeholder="Password" autocomplete="current-password">
+    ${authMsg ? `<div class="small amber" style="margin-top:10px">${esc(authMsg)}</div>` : ''}
+    <button class="btn primary wide" data-act="login">Sign In</button>
+    <button class="btn wide" data-act="signup">Create Account</button>
+    <button class="btn wide ghost" data-act="skip-local">Skip — work on this phone only</button>
+  </div>`;
 }
 
 function timerCard() {
@@ -426,7 +542,15 @@ function renderMore() {
   const st = S.settings;
   const dayChips = (key) => [0, 1, 2, 3, 4, 5, 6].map(d =>
     `<span class="daychip ${st[key].includes(d) ? 'on' : ''}" data-act="chip" data-key="${key}" data-day="${d}">${DAY_NAMES[d]}</span>`).join('');
-  return `<h2>Work Schedule</h2>
+  const acct = session
+    ? `<div class="row"><div class="grow"><div>${esc(session.user.email)}</div>
+       <div class="muted small">${SYNC_INFO[cloudStatus][1]}</div></div>
+       <button class="btn tiny" data-act="signout">Sign out</button></div>`
+    : `<div class="row"><div class="grow muted small">Working on this phone only — nothing is backed up to the cloud.</div>
+       <button class="btn tiny primary" data-act="signin-again">Sign in</button></div>`;
+  return `<h2>Account</h2>
+  <div class="card">${acct}</div>
+  <h2>Work Schedule</h2>
   <div class="card">
     <label class="setting">Shop days<span class="daychips">${dayChips('workDays')}</span></label>
     <label class="setting">Admin days<span class="daychips">${dayChips('adminDays')}</span></label>
@@ -456,6 +580,15 @@ document.addEventListener('click', (e) => {
   if (el !== e.target.closest('[data-act]')) return;
 
   if (act === 'tab') { nav.tab = el.dataset.tab; nav.jobId = null; nav.blockMenuDate = null; }
+
+  else if (act === 'login' || act === 'signup') { doAuth(act); return; }
+  else if (act === 'skip-local') { localOnly = true; cloudStatus = 'local'; }
+  else if (act === 'signin-again') { localOnly = false; authMsg = ''; }
+  else if (act === 'signout') {
+    if (!confirm('Sign out? The app will keep working from this phone’s local copy.')) return;
+    if (sb) sb.auth.signOut();
+    session = null; localOnly = true; cloudStatus = 'local'; cloudStamp = null;
+  }
 
   else if (act === 'punch-in') { punchIn(el.dataset.task); }
   else if (act === 'punch-out') { punchOut(); }
@@ -585,6 +718,27 @@ setInterval(() => {
   if (e && el) el.textContent = fmtElapsed(Date.now() - e.start);
 }, 1000);
 let lastMin = nowMin();
-setInterval(() => { if (nowMin() !== lastMin) { lastMin = nowMin(); if (nav.tab === 'today' || nav.tab === 'week') render(); } }, 15000);
+setInterval(() => { if (nowMin() !== lastMin) { lastMin = nowMin(); if ((session || localOnly) && (nav.tab === 'today' || nav.tab === 'week')) render(); } }, 15000);
 
-render();
+// Pull newer cloud data when the app wakes up or periodically while open.
+setInterval(checkRemote, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) checkRemote(); });
+
+(async function boot() {
+  if (sb) {
+    try {
+      const { data } = await sb.auth.getSession();
+      session = data.session;
+      sb.auth.onAuthStateChange((event, s) => {
+        if (event === 'SIGNED_OUT') session = null;
+        else if (s) session = s;
+      });
+      if (session) {
+        cloudStatus = 'pending';
+        render();          // show local data instantly…
+        await cloudLoad(); // …then swap in the cloud copy if it's newer
+      }
+    } catch { /* auth unreachable — login screen still renders */ }
+  }
+  render();
+})();

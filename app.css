@@ -109,3 +109,17 @@ label.setting:first-of-type { border-top: none; }
 
 .tpl-grid { display: grid; grid-template-columns: 1fr 80px; gap: 8px; align-items: center; margin-top: 8px; }
 .tpl-grid input { width: 100%; text-align: center; }
+
+.login-card { margin-top: 18vh; }
+.login-card input { width: 100%; margin-top: 8px; font-size: 16px; }
+.login-card .btn.wide { margin-top: 10px; }
+
+.banner { background: rgba(96,165,250,.12); border: 1px solid rgba(96,165,250,.4); color: var(--blue);
+  border-radius: 12px; padding: 10px 12px; font-size: 13px; margin-bottom: 12px; }
+
+#sync-dot { font-size: 10px; vertical-align: 1px; }
+#sync-dot.green { color: var(--green); }
+#sync-dot.amber { color: var(--accent); }
+#sync-dot.red { color: var(--red); }
+#sync-dot.blue { color: var(--blue); }
+#sync-dot.dim { color: var(--dim); }
