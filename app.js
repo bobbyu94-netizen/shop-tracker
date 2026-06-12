@@ -13,13 +13,18 @@ const DEFAULT_STATE = {
     lunchStart: '12:00',
     lunchEnd: '13:00',
     tz: null,                        // set from the device; calendar feed needs it
+    taxRate: 0.07,                   // FL sales tax — mirrors KRSC hub default
   },
   icsKey: null,      // secret in the calendar-feed URL
-  jobs: [],          // {id, name, status:'active'|'pending'|'done', tasks:[{id,name,estHours,done}]}
+  jobs: [],          // {id, name, status:'active'|'pending'|'done', quotedPrice, tasks:[{id,name,estHours,done}]}
   timeEntries: [],   // {id, taskId, jobId, start(ms), stop(ms|null)}
   blocks: [],        // {date:'YYYY-MM-DD', portion:'full'|'morning'|'afternoon'}
   adminTodos: [],    // {id, text, done}
+  ledger: [],        // {id, date, type:'income'|'expense', who, category, note, amount, jobId|null}
 };
+const INCOME_CATS = ['Sales', 'CNC Sales', 'Other Income'];
+const EXPENSE_CATS = ['Materials', 'Supplies', 'Equipment', 'Shop Improvements', 'Software', 'Startup Costs', 'Other'];
+const TARGET_RATE = 65; // shop labor rate from cabinet-system labor standards
 
 // Aggregated per-cabinet operations from cabinet-system labor standards (baseline widths).
 // hours: [base, upper, pantry] per cabinet; per-door/per-drawer ops computed separately.
@@ -58,10 +63,15 @@ let cloudStamp = null;
 let pushTimer = null;
 let authMsg = '';
 
+function normalize(data) {
+  const s = Object.assign(structuredClone(DEFAULT_STATE), data);
+  s.settings = Object.assign(structuredClone(DEFAULT_STATE.settings), data.settings || {});
+  return s;
+}
 function load() {
   try {
     const raw = localStorage.getItem(STORE_KEY);
-    if (raw) return Object.assign(structuredClone(DEFAULT_STATE), JSON.parse(raw));
+    if (raw) return normalize(JSON.parse(raw));
   } catch (e) { /* corrupted store falls back to defaults */ }
   return structuredClone(DEFAULT_STATE);
 }
@@ -92,7 +102,7 @@ async function cloudLoad() {
     const { data, error } = await sb.from('app_state').select('data,updated_at').eq('user_id', session.user.id).maybeSingle();
     if (error) { cloudStatus = tableMissing(error) ? 'setup' : 'offline'; return; }
     if (data) {
-      S = Object.assign(structuredClone(DEFAULT_STATE), data.data);
+      S = normalize(data.data);
       cloudStamp = data.updated_at;
       localStorage.setItem(STORE_KEY, JSON.stringify(S));
       cloudStatus = 'ok';
@@ -287,6 +297,149 @@ function addCabinetTemplate(job, base, upper, pantry, finish) {
   }
 }
 
+/* ---------- money ---------- */
+function fmt$(n, cents) {
+  const v = cents ? Math.abs(n).toFixed(2) : Math.round(Math.abs(n)).toString();
+  return (n < 0 ? '-$' : '$') + v.replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+function monthKey(date) { return date.slice(0, 7); }
+function monthName(key) {
+  const m = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return m[parseInt(key.slice(5)) - 1];
+}
+function ledgerSum(type, filter) {
+  return S.ledger.filter(e => e.type === type && (!filter || filter(e))).reduce((a, e) => a + e.amount, 0);
+}
+function jobMoney(job) {
+  return {
+    collected: ledgerSum('income', e => e.jobId === job.id),
+    materials: ledgerSum('expense', e => e.jobId === job.id),
+  };
+}
+function cashFlowSvg() {
+  const tk = monthKey(todayStr());
+  const keys = [];
+  let [y, m] = [parseInt(tk.slice(0, 4)), parseInt(tk.slice(5))];
+  for (let i = 5; i >= 0; i--) {
+    let mm = m - i, yy = y;
+    if (mm < 1) { mm += 12; yy--; }
+    keys.push(yy + '-' + String(mm).padStart(2, '0'));
+  }
+  const data = keys.map(k => ({
+    k,
+    inc: ledgerSum('income', e => monthKey(e.date) === k),
+    exp: ledgerSum('expense', e => monthKey(e.date) === k),
+  }));
+  const max = Math.max(100, ...data.map(d => Math.max(d.inc, d.exp)));
+  const W = 340, H = 150, plotH = 110, baseY = 122, slot = W / 6;
+  let bars = '', labels = '';
+  data.forEach((d, i) => {
+    const x = i * slot;
+    const hI = d.inc / max * plotH, hE = d.exp / max * plotH;
+    bars += `<rect x="${(x + slot / 2 - 17).toFixed(1)}" y="${(baseY - hI).toFixed(1)}" width="15" height="${hI.toFixed(1)}" rx="2" fill="var(--green)"/>`;
+    bars += `<rect x="${(x + slot / 2 + 2).toFixed(1)}" y="${(baseY - hE).toFixed(1)}" width="15" height="${hE.toFixed(1)}" rx="2" fill="var(--red)" opacity=".85"/>`;
+    labels += `<text x="${(x + slot / 2).toFixed(1)}" y="${baseY + 14}" text-anchor="middle" fill="var(--dim)" font-size="11">${monthName(d.k)}</text>`;
+    const net = d.inc - d.exp;
+    labels += `<text x="${(x + slot / 2).toFixed(1)}" y="${baseY + 27}" text-anchor="middle" fill="${net >= 0 ? 'var(--green)' : 'var(--red)'}" font-size="9">${net ? fmt$(net) : ''}</text>`;
+  });
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%">
+    <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}" stroke="var(--line)"/>
+    ${bars}${labels}</svg>`;
+}
+function entryFormHtml(f) {
+  const cats = f.type === 'income' ? INCOME_CATS : EXPENSE_CATS;
+  const jobOpts = S.jobs.map(j => `<option value="${j.id}" ${f.jobId === j.id ? 'selected' : ''}>${esc(j.name)}</option>`).join('');
+  return `<div class="card form-card">
+    <b>${f.type === 'income' ? 'Record income' : 'Add expense'}</b>
+    <div class="form-grid">
+      <input type="date" id="mf-date" value="${todayStr()}">
+      <input type="number" id="mf-amount" placeholder="$ amount" inputmode="decimal" step="0.01" value="${f.prefillAmount || ''}">
+      <input type="text" id="mf-who" placeholder="${f.type === 'income' ? 'Customer' : 'Vendor'}">
+      <select id="mf-cat">${cats.map((c, i) => `<option ${i === 0 ? 'selected' : ''}>${c}</option>`).join('')}</select>
+      <select id="mf-job"><option value="">No job (general)</option>${jobOpts}</select>
+      <input type="text" id="mf-note" placeholder="Description">
+    </div>
+    <div class="blockbtns">
+      <button class="btn tiny primary" data-act="money-save" data-type="${f.type}">Save</button>
+      <button class="btn tiny ghost" data-act="money-cancel">Cancel</button>
+    </div>
+  </div>`;
+}
+function renderMoney() {
+  const tk = monthKey(todayStr());
+  const mInc = ledgerSum('income', e => monthKey(e.date) === tk);
+  const mExp = ledgerSum('expense', e => monthKey(e.date) === tk);
+  const yk = todayStr().slice(0, 4);
+  const yInc = ledgerSum('income', e => e.date.startsWith(yk));
+  const yExp = ledgerSum('expense', e => e.date.startsWith(yk));
+  const tax = yInc * (S.settings.taxRate || 0);
+
+  let html = `<div class="stat-row">
+    <div class="card stat"><div class="muted small">${monthName(tk)} in</div><div class="big green">${fmt$(mInc)}</div></div>
+    <div class="card stat"><div class="muted small">${monthName(tk)} out</div><div class="big red">${fmt$(mExp)}</div></div>
+    <div class="card stat"><div class="muted small">${monthName(tk)} net</div><div class="big ${mInc - mExp >= 0 ? 'green' : 'red'}">${fmt$(mInc - mExp)}</div></div>
+  </div>`;
+
+  html += `<h2>Cash Flow — Last 6 Months</h2><div class="card">${cashFlowSvg()}
+    <div class="muted small" style="text-align:center"><span class="green">&#9632;</span> income &nbsp; <span class="red">&#9632;</span> expenses</div></div>`;
+
+  html += `<h2>${yk} Year to Date</h2><div class="card">
+    <div class="seg"><div class="grow">Income</div><b class="green">${fmt$(yInc, true)}</b></div>
+    <div class="seg"><div class="grow">Expenses</div><b class="red">${fmt$(yExp, true)}</b></div>
+    <div class="seg"><div class="grow">Net</div><b class="${yInc - yExp >= 0 ? 'green' : 'red'}">${fmt$(yInc - yExp, true)}</b></div>
+    <div class="seg"><div class="grow muted small">Sales tax to set aside (${((S.settings.taxRate || 0) * 100).toFixed(0)}% of income)</div><span class="amber">${fmt$(tax, true)}</span></div>
+  </div>`;
+
+  const moneyJobs = S.jobs.filter(j => {
+    const m = jobMoney(j);
+    return j.quotedPrice || m.collected || m.materials || jobActualHours(j) > 0.01;
+  });
+  if (moneyJobs.length) {
+    html += `<h2>Profit by Job</h2>`;
+    for (const j of moneyJobs) {
+      const m = jobMoney(j);
+      const hrs = jobActualHours(j), est = jobEstHours(j);
+      const earned = m.collected - m.materials;
+      const rate = hrs > 0.01 ? earned / hrs : null;
+      html += `<div class="card" data-act="open-money-job" data-job="${j.id}">
+        <div class="row"><div class="grow"><b>${esc(j.name)}</b></div><span class="pill ${j.status}">${j.status}</span></div>
+        <div class="money-grid">
+          <div><span class="muted small">Quoted</span><br>${j.quotedPrice ? fmt$(j.quotedPrice) : '—'}</div>
+          <div><span class="muted small">Collected</span><br><span class="green">${fmt$(m.collected)}</span></div>
+          <div><span class="muted small">Materials</span><br><span class="red">${fmt$(m.materials)}</span></div>
+          <div><span class="muted small">Hours</span><br>${hrs > 0.01 ? fmtH(hrs) : '—'}${est ? ` <span class="muted small">/ ${fmtH(est)} est</span>` : ''}</div>
+        </div>
+        ${rate !== null ? `<div class="mt small">Realized shop rate: <b class="${rate >= TARGET_RATE ? 'green' : 'amber'}">${fmt$(rate)}/hr</b> <span class="muted">(target $${TARGET_RATE})</span></div>` : ''}
+      </div>`;
+    }
+  }
+
+  html += `<h2>Ledger</h2>`;
+  if (nav.moneyForm && !nav.moneyForm.jobView) html += entryFormHtml(nav.moneyForm);
+  else html += `<div class="blockbtns" style="margin-bottom:10px">
+    <button class="btn tiny go" data-act="money-form" data-type="income">+ Income</button>
+    <button class="btn tiny" data-act="money-form" data-type="expense">+ Expense</button>
+  </div>`;
+  const entries = [...S.ledger].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
+  if (!entries.length) html += `<div class="card flat">No entries yet. Add income and expenses as they happen — profit per job comes free.</div>`;
+  else {
+    html += `<div class="card">`;
+    for (const e of entries) {
+      const job = e.jobId ? jobById(e.jobId) : null;
+      html += `<div class="seg">
+        <div class="seg-time"><b>${e.date.slice(5).replace('-', '/')}</b><br>${esc(e.category || '')}</div>
+        <div class="grow"><div>${esc(e.who || '')}${e.note ? ` <span class="muted small">— ${esc(e.note)}</span>` : ''}</div>
+        ${job ? `<div class="muted small">&#128204; ${esc(job.name)}</div>` : ''}</div>
+        <b class="${e.type === 'income' ? 'green' : 'red'}">${e.type === 'income' ? '+' : '−'}${fmt$(e.amount, true)}</b>
+        <button class="icon-btn" data-act="del-ledger" data-id="${e.id}">&#10005;</button>
+      </div>`;
+    }
+    if (S.ledger.length > 15) html += `<div class="muted small mt" style="text-align:center">Showing 15 of ${S.ledger.length} entries</div>`;
+    html += `</div>`;
+  }
+  return html;
+}
+
 /* ---------- rendering ---------- */
 const $view = document.getElementById('view');
 const $sub = document.getElementById('topbar-sub');
@@ -309,6 +462,7 @@ function render() {
   if (nav.tab === 'today') html += renderToday(sched);
   else if (nav.tab === 'week') html += renderWeek(sched);
   else if (nav.tab === 'jobs') html += nav.jobId ? renderJobDetail(sched) : renderJobs(sched);
+  else if (nav.tab === 'money') html += renderMoney();
   else html += renderMore();
   $view.innerHTML = html;
   const todaySegs = sched.byDate[todayStr()] || [];
@@ -505,8 +659,21 @@ function renderJobDetail(sched) {
       ${j.status === 'done' ? `<button class="btn tiny" data-act="job-status" data-job="${j.id}" data-status="active">Reopen</button>` : ''}
       <button class="btn tiny ghost red" data-act="del-job" data-job="${j.id}">Delete</button>
     </div>
-  </div>
-  <h2>Tasks</h2><div class="card">`;
+  </div>`;
+  const m = jobMoney(j);
+  html += `<h2>Money</h2><div class="card">
+    <div class="money-grid">
+      <div data-act="edit-quoted" data-job="${j.id}"><span class="muted small">Quoted &#9998;</span><br>${j.quotedPrice ? fmt$(j.quotedPrice, true) : '—'}</div>
+      <div><span class="muted small">Collected</span><br><span class="green">${fmt$(m.collected, true)}</span></div>
+      <div><span class="muted small">Materials</span><br><span class="red">${fmt$(m.materials, true)}</span></div>
+      <div><span class="muted small">Net so far</span><br><b class="${m.collected - m.materials >= 0 ? 'green' : 'red'}">${fmt$(m.collected - m.materials, true)}</b></div>
+    </div>
+    ${nav.moneyForm && nav.moneyForm.jobView === j.id ? entryFormHtml(nav.moneyForm) : `<div class="blockbtns">
+      <button class="btn tiny go" data-act="money-form" data-type="income" data-job="${j.id}">+ Payment</button>
+      <button class="btn tiny" data-act="money-form" data-type="expense" data-job="${j.id}">+ Materials</button>
+    </div>`}
+  </div>`;
+  html += `<h2>Tasks</h2><div class="card">`;
   if (!j.tasks.length) html += `<div class="muted small">No tasks yet.</div>`;
   j.tasks.forEach((t, i) => {
     const a = actualHours(t.id);
@@ -570,6 +737,7 @@ function renderMore() {
     <label class="setting">Day end <input type="time" data-set="dayEnd" value="${st.dayEnd}"></label>
     <label class="setting">Lunch start <input type="time" data-set="lunchStart" value="${st.lunchStart}"></label>
     <label class="setting">Lunch end <input type="time" data-set="lunchEnd" value="${st.lunchEnd}"></label>
+    <label class="setting">Sales tax % <input type="number" id="set-taxrate" inputmode="decimal" step="0.1" style="width:80px" value="${((st.taxRate || 0) * 100).toFixed(1)}"></label>
   </div>
   <h2>Data</h2>
   <div class="card">
@@ -631,7 +799,47 @@ document.addEventListener('click', (e) => {
   }
   else if (act === 'open-job') { nav.jobId = el.dataset.job; }
   else if (act === 'back-jobs') { nav.jobId = null; }
-  else if (act === 'job-status') { const j = jobById(el.dataset.job); if (j) { j.status = el.dataset.status; save(); } }
+  else if (act === 'job-status') {
+    const j = jobById(el.dataset.job);
+    if (j) {
+      const wasPending = j.status === 'pending';
+      j.status = el.dataset.status;
+      // Deposit-received flow: opening the payment form pre-filled at 50% of the quote.
+      if (wasPending && j.status === 'active') {
+        nav.moneyForm = { type: 'income', jobId: j.id, jobView: j.id, prefillAmount: j.quotedPrice ? (j.quotedPrice / 2).toFixed(2) : '' };
+      }
+      save();
+    }
+  }
+  else if (act === 'money-form') {
+    nav.moneyForm = { type: el.dataset.type, jobId: el.dataset.job || null, jobView: el.dataset.job || null };
+  }
+  else if (act === 'money-cancel') { nav.moneyForm = null; }
+  else if (act === 'money-save') {
+    const amount = parseFloat(document.getElementById('mf-amount').value);
+    const date = document.getElementById('mf-date').value;
+    if (!(amount > 0) || !date) { alert('Enter a date and an amount.'); return; }
+    S.ledger.push({
+      id: uid(), date, type: el.dataset.type, amount: Math.round(amount * 100) / 100,
+      who: document.getElementById('mf-who').value.trim(),
+      category: document.getElementById('mf-cat').value,
+      note: document.getElementById('mf-note').value.trim(),
+      jobId: document.getElementById('mf-job').value || null,
+    });
+    nav.moneyForm = null; save();
+  }
+  else if (act === 'del-ledger') {
+    const e = S.ledger.find(x => x.id === el.dataset.id);
+    if (e && confirm(`Delete ${e.type} of ${fmt$(e.amount, true)}${e.who ? ' (' + e.who + ')' : ''}?`)) {
+      S.ledger = S.ledger.filter(x => x.id !== el.dataset.id); save();
+    } else return;
+  }
+  else if (act === 'edit-quoted') {
+    const j = jobById(el.dataset.job); if (!j) return;
+    const v = parseFloat(prompt('Quoted price for "' + j.name + '":', j.quotedPrice || ''));
+    if (v > 0) { j.quotedPrice = Math.round(v * 100) / 100; save(); }
+  }
+  else if (act === 'open-money-job') { nav.tab = 'jobs'; nav.jobId = el.dataset.job; }
   else if (act === 'del-job') {
     const j = jobById(el.dataset.job);
     if (j && confirm(`Delete "${j.name}" and its time records?`)) {
@@ -714,6 +922,10 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   const set = e.target.dataset && e.target.dataset.set;
   if (set) { S.settings[set] = e.target.value; save(); render(); }
+  if (e.target.id === 'set-taxrate') {
+    const v = parseFloat(e.target.value);
+    if (v >= 0 && v < 50) { S.settings.taxRate = v / 100; save(); render(); }
+  }
   if (e.target.id === 'import-file' && e.target.files[0]) {
     const fr = new FileReader();
     fr.onload = () => {
@@ -721,7 +933,7 @@ document.addEventListener('change', (e) => {
         const data = JSON.parse(fr.result);
         if (!data.jobs || !data.settings) throw new Error('bad file');
         if (confirm('Replace everything on this device with the backup?')) {
-          S = Object.assign(structuredClone(DEFAULT_STATE), data); save(); render();
+          S = normalize(data); save(); render();
         }
       } catch { alert('That file is not a Shop Tracker backup.'); }
     };

@@ -110,6 +110,15 @@ label.setting:first-of-type { border-top: none; }
 .tpl-grid { display: grid; grid-template-columns: 1fr 80px; gap: 8px; align-items: center; margin-top: 8px; }
 .tpl-grid input { width: 100%; text-align: center; }
 
+.stat-row { display: flex; gap: 8px; }
+.stat-row .stat { flex: 1; padding: 10px 8px; text-align: center; }
+.stat-row .big { font-size: 17px; }
+.money-grid { display: grid; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 8px; margin-top: 8px; font-size: 14px; }
+.money-grid .muted.small { font-size: 11px; }
+.form-card { background: var(--card2); margin-top: 10px; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.form-grid input, .form-grid select { width: 100%; }
+
 .login-card { margin-top: 18vh; }
 .login-card input { width: 100%; margin-top: 8px; font-size: 16px; }
 .login-card .btn.wide { margin-top: 10px; }
