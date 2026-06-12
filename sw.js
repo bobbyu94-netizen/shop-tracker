@@ -1,4 +1,4 @@
-const CACHE = 'shop-tracker-v2';
+const CACHE = 'shop-tracker-v3';
 const ASSETS = ['./', './index.html', './app.css', './app.js', './manifest.webmanifest', './icon-192.png', './icon-512.png', './apple-touch-icon.png'];
 
 self.addEventListener('install', (e) => {

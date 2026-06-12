@@ -12,7 +12,9 @@ const DEFAULT_STATE = {
     dayEnd: '17:00',
     lunchStart: '12:00',
     lunchEnd: '13:00',
+    tz: null,                        // set from the device; calendar feed needs it
   },
+  icsKey: null,      // secret in the calendar-feed URL
   jobs: [],          // {id, name, status:'active'|'pending'|'done', tasks:[{id,name,estHours,done}]}
   timeEntries: [],   // {id, taskId, jobId, start(ms), stop(ms|null)}
   blocks: [],        // {date:'YYYY-MM-DD', portion:'full'|'morning'|'afternoon'}
@@ -548,8 +550,18 @@ function renderMore() {
        <button class="btn tiny" data-act="signout">Sign out</button></div>`
     : `<div class="row"><div class="grow muted small">Working on this phone only — nothing is backed up to the cloud.</div>
        <button class="btn tiny primary" data-act="signin-again">Sign in</button></div>`;
+  const icsUrl = SB_URL + '/functions/v1/calendar?key=' + (S.icsKey || '');
+  const cal = session
+    ? `<div class="muted small">Your scheduled tasks in Apple or Google Calendar, refreshed automatically. The link is private — anyone with it can see your schedule.</div>
+       <div class="blockbtns">
+         <a class="btn tiny primary" href="${icsUrl.replace('https://', 'webcal://')}">Subscribe (iPhone)</a>
+         <button class="btn tiny" data-act="copy-ics">Copy link</button>
+       </div>`
+    : `<div class="muted small">Sign in to use the calendar feed.</div>`;
   return `<h2>Account</h2>
   <div class="card">${acct}</div>
+  <h2>Calendar Feed</h2>
+  <div class="card">${cal}</div>
   <h2>Work Schedule</h2>
   <div class="card">
     <label class="setting">Shop days<span class="daychips">${dayChips('workDays')}</span></label>
@@ -679,6 +691,12 @@ document.addEventListener('click', (e) => {
     save();
   }
 
+  else if (act === 'copy-ics') {
+    navigator.clipboard.writeText(SB_URL + '/functions/v1/calendar?key=' + S.icsKey)
+      .then(() => { el.textContent = 'Copied ✓'; })
+      .catch(() => { prompt('Copy this link:', SB_URL + '/functions/v1/calendar?key=' + S.icsKey); });
+    return;
+  }
   else if (act === 'export') {
     const blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });
     const a = document.createElement('a');
@@ -740,5 +758,14 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) chec
       }
     } catch { /* auth unreachable — login screen still renders */ }
   }
+  // Backfill device-derived fields (after cloudLoad so the cloud copy gets them too).
+  let dirty = false;
+  if (!S.settings.tz) { S.settings.tz = Intl.DateTimeFormat().resolvedOptions().timeZone; dirty = true; }
+  if (!S.icsKey) {
+    const b = new Uint8Array(16); crypto.getRandomValues(b);
+    S.icsKey = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    dirty = true;
+  }
+  if (dirty) save();
   render();
 })();
