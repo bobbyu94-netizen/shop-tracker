@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Shop Tracker</title>
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Shop">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header id="topbar">
+  <div id="topbar-title">Shop Tracker</div>
+  <div id="topbar-sub"></div>
+</header>
+<main id="view"></main>
+<nav id="tabbar">
+  <button class="tab" data-act="tab" data-tab="today"><span class="tab-ico">&#9201;</span>Today</button>
+  <button class="tab" data-act="tab" data-tab="week"><span class="tab-ico">&#128197;</span>Week</button>
+  <button class="tab" data-act="tab" data-tab="jobs"><span class="tab-ico">&#128736;</span>Jobs</button>
+  <button class="tab" data-act="tab" data-tab="more"><span class="tab-ico">&#8943;</span>More</button>
+</nav>
+<script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+}
+</script>
+</body>
+</html>
