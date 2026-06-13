@@ -427,6 +427,27 @@ async function uploadReceipt(entryId, dataUrl) {
   if (error) throw error;
   return path;
 }
+function exportLedgerCSV() {
+  const from = document.getElementById('export-from').value;
+  const to   = document.getElementById('export-to').value;
+  const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
+  const rows = [...S.ledger]
+    .filter(e => (!from || e.date >= from) && (!to || e.date <= to))
+    .sort((a, b) => a.date.localeCompare(b.date));
+  if (!rows.length) { alert('No entries in that date range.'); return; }
+  const lines = [['Date','Month','Type','Customer/Vendor','Category','Description','Mileage','Amount','Exempt','Notes']];
+  for (const e of rows) {
+    const d = new Date(e.date + 'T00:00:00');
+    const dateStr = `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;
+    lines.push([dateStr, MONTHS[d.getMonth()], e.type==='income'?'Income':'Expense', e.who||'', e.category||'', e.note||'', '', e.amount, '', e.note||'']);
+  }
+  const csv = lines.map(r => r.map(c => { const s=String(c); return /[,"\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s; }).join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = `schedule-c-${todayStr()}.csv`;
+  a.click();
+}
+
 function renderMoney() {
   const tk = monthKey(todayStr());
   const mInc = ledgerSum('income', e => monthKey(e.date) === tk);
@@ -483,6 +504,14 @@ function renderMoney() {
     <button class="btn tiny go" data-act="money-form" data-type="income">+ Income</button>
     <button class="btn tiny" data-act="money-form" data-type="expense">+ Expense</button>
     ${session ? `<button class="btn tiny primary" data-act="receipt">&#128247; Receipt</button>` : ''}
+  </div>`;
+  const today = todayStr();
+  const weekAgo = new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,10);
+  html += `<div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap">
+    <input type="date" id="export-from" value="${weekAgo}" style="flex:1;min-width:120px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:13px">
+    <span class="muted small">to</span>
+    <input type="date" id="export-to" value="${today}" style="flex:1;min-width:120px;padding:4px 6px;border:1px solid var(--border);border-radius:6px;background:var(--card);color:var(--fg);font-size:13px">
+    <button class="btn tiny" data-act="export-csv">Export CSV</button>
   </div>`;
   const entries = [...S.ledger].sort((a, b) => b.date.localeCompare(a.date));
   if (!entries.length) html += `<div class="card flat">No entries yet. Add income and expenses as they happen — profit per job comes free.</div>`;
@@ -933,6 +962,7 @@ document.addEventListener('click', (e) => {
     if (ov) ov.remove();
     return;
   }
+  else if (act === 'export-csv') { exportLedgerCSV(); return; }
   else if (act === 'del-ledger') {
     const e = S.ledger.find(x => x.id === el.dataset.id);
     if (e && confirm(`Delete ${e.type} of ${fmt$(e.amount, true)}${e.who ? ' (' + e.who + ')' : ''}?`)) {
