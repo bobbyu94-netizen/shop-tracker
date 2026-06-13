@@ -119,6 +119,12 @@ label.setting:first-of-type { border-top: none; }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
 .form-grid input, .form-grid select { width: 100%; }
 
+.receipt-thumb { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); flex-shrink: 0; }
+#receipt-overlay { position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.92);
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+  padding: calc(env(safe-area-inset-top) + 16px) 16px calc(env(safe-area-inset-bottom) + 16px); }
+#receipt-overlay img { max-width: 100%; max-height: 80vh; border-radius: 10px; }
+
 .login-card { margin-top: 18vh; }
 .login-card input { width: 100%; margin-top: 8px; font-size: 16px; }
 .login-card .btn.wide { margin-top: 10px; }

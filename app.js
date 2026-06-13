@@ -351,19 +351,79 @@ function entryFormHtml(f) {
   const jobOpts = S.jobs.map(j => `<option value="${j.id}" ${f.jobId === j.id ? 'selected' : ''}>${esc(j.name)}</option>`).join('');
   return `<div class="card form-card">
     <b>${f.type === 'income' ? 'Record income' : 'Add expense'}</b>
+    ${f.receiptData ? `<div class="row mt"><img src="${f.receiptData}" class="receipt-thumb"><div class="muted small">${esc(f.aiNote || 'Check what was read off the receipt, then save.')}</div></div>` : ''}
     <div class="form-grid">
-      <input type="date" id="mf-date" value="${todayStr()}">
+      <input type="date" id="mf-date" value="${f.prefillDate || todayStr()}">
       <input type="number" id="mf-amount" placeholder="$ amount" inputmode="decimal" step="0.01" value="${f.prefillAmount || ''}">
-      <input type="text" id="mf-who" placeholder="${f.type === 'income' ? 'Customer' : 'Vendor'}">
-      <select id="mf-cat">${cats.map((c, i) => `<option ${i === 0 ? 'selected' : ''}>${c}</option>`).join('')}</select>
+      <input type="text" id="mf-who" placeholder="${f.type === 'income' ? 'Customer' : 'Vendor'}" value="${esc(f.prefillWho || '')}">
+      <select id="mf-cat">${cats.map((c, i) => `<option ${(f.prefillCat ? c === f.prefillCat : i === 0) ? 'selected' : ''}>${c}</option>`).join('')}</select>
       <select id="mf-job"><option value="">No job (general)</option>${jobOpts}</select>
-      <input type="text" id="mf-note" placeholder="Description">
+      <input type="text" id="mf-note" placeholder="Description" value="${esc(f.prefillNote || '')}">
     </div>
     <div class="blockbtns">
       <button class="btn tiny primary" data-act="money-save" data-type="${f.type}">Save</button>
       <button class="btn tiny ghost" data-act="money-cancel">Cancel</button>
     </div>
   </div>`;
+}
+
+/* ---------- receipt capture ---------- */
+function downscaleImage(file) {
+  return createImageBitmap(file).then(bmp => {
+    const MAX = 1400;
+    const scale = Math.min(1, MAX / Math.max(bmp.width, bmp.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bmp.width * scale);
+    canvas.height = Math.round(bmp.height * scale);
+    canvas.getContext('2d').drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.72);
+  });
+}
+async function processReceipt(file) {
+  nav.receiptBusy = true; render();
+  let dataUrl;
+  try { dataUrl = await downscaleImage(file); }
+  catch { nav.receiptBusy = false; render(); alert('Could not read that photo.'); return; }
+  const form = {
+    type: 'expense', jobId: nav.receiptJob || null, jobView: nav.receiptJob || null,
+    receiptData: dataUrl,
+  };
+  try {
+    const { data, error } = await sb.functions.invoke('receipt', { body: { image: dataUrl } });
+    if (!error && data && data.result) {
+      const r = data.result;
+      form.prefillWho = r.vendor || '';
+      form.prefillAmount = r.total > 0 ? r.total.toFixed(2) : '';
+      form.prefillDate = /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? r.date : '';
+      form.prefillCat = EXPENSE_CATS.includes(r.category) ? r.category : '';
+      form.prefillNote = r.note || '';
+    } else if (data && data.error === 'no-key') {
+      form.aiNote = 'Photo attached. Auto-read isn’t set up yet — fill in the details.';
+    } else {
+      form.aiNote = 'Photo attached, but it couldn’t be read — fill in the details.';
+    }
+  } catch {
+    form.aiNote = 'Photo attached, but it couldn’t be read — fill in the details.';
+  }
+  nav.receiptBusy = false;
+  nav.moneyForm = form;
+  render();
+}
+function dataUrlToBlob(dataUrl) { return fetch(dataUrl).then(r => r.blob()); }
+async function showReceipt(path) {
+  const { data, error } = await sb.storage.from('receipts').createSignedUrl(path, 3600);
+  if (error || !data) { alert('Could not load the receipt photo.'); return; }
+  const ov = document.createElement('div');
+  ov.id = 'receipt-overlay';
+  ov.innerHTML = `<img src="${data.signedUrl}"><button class="btn" data-act="close-receipt">Close</button>`;
+  document.body.appendChild(ov);
+}
+async function uploadReceipt(entryId, dataUrl) {
+  const path = session.user.id + '/' + entryId + '.jpg';
+  const blob = await dataUrlToBlob(dataUrl);
+  const { error } = await sb.storage.from('receipts').upload(path, blob, { contentType: 'image/jpeg', upsert: true });
+  if (error) throw error;
+  return path;
 }
 function renderMoney() {
   const tk = monthKey(todayStr());
@@ -415,10 +475,12 @@ function renderMoney() {
   }
 
   html += `<h2>Ledger</h2>`;
-  if (nav.moneyForm && !nav.moneyForm.jobView) html += entryFormHtml(nav.moneyForm);
+  if (nav.receiptBusy) html += `<div class="card flat">&#128247; Reading receipt&hellip;</div>`;
+  else if (nav.moneyForm && !nav.moneyForm.jobView) html += entryFormHtml(nav.moneyForm);
   else html += `<div class="blockbtns" style="margin-bottom:10px">
     <button class="btn tiny go" data-act="money-form" data-type="income">+ Income</button>
     <button class="btn tiny" data-act="money-form" data-type="expense">+ Expense</button>
+    ${session ? `<button class="btn tiny primary" data-act="receipt">&#128247; Receipt</button>` : ''}
   </div>`;
   const entries = [...S.ledger].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
   if (!entries.length) html += `<div class="card flat">No entries yet. Add income and expenses as they happen — profit per job comes free.</div>`;
@@ -431,6 +493,7 @@ function renderMoney() {
         <div class="grow"><div>${esc(e.who || '')}${e.note ? ` <span class="muted small">— ${esc(e.note)}</span>` : ''}</div>
         ${job ? `<div class="muted small">&#128204; ${esc(job.name)}</div>` : ''}</div>
         <b class="${e.type === 'income' ? 'green' : 'red'}">${e.type === 'income' ? '+' : '−'}${fmt$(e.amount, true)}</b>
+        ${e.receipt && session ? `<button class="icon-btn" data-act="view-receipt" data-id="${e.id}" title="View receipt">&#128206;</button>` : ''}
         <button class="icon-btn" data-act="del-ledger" data-id="${e.id}">&#10005;</button>
       </div>`;
     }
@@ -668,9 +731,11 @@ function renderJobDetail(sched) {
       <div><span class="muted small">Materials</span><br><span class="red">${fmt$(m.materials, true)}</span></div>
       <div><span class="muted small">Net so far</span><br><b class="${m.collected - m.materials >= 0 ? 'green' : 'red'}">${fmt$(m.collected - m.materials, true)}</b></div>
     </div>
-    ${nav.moneyForm && nav.moneyForm.jobView === j.id ? entryFormHtml(nav.moneyForm) : `<div class="blockbtns">
+    ${nav.receiptBusy && nav.receiptJob === j.id ? `<div class="muted small mt">&#128247; Reading receipt&hellip;</div>`
+      : nav.moneyForm && nav.moneyForm.jobView === j.id ? entryFormHtml(nav.moneyForm) : `<div class="blockbtns">
       <button class="btn tiny go" data-act="money-form" data-type="income" data-job="${j.id}">+ Payment</button>
       <button class="btn tiny" data-act="money-form" data-type="expense" data-job="${j.id}">+ Materials</button>
+      ${session ? `<button class="btn tiny primary" data-act="receipt" data-job="${j.id}">&#128247; Receipt</button>` : ''}
     </div>`}
   </div>`;
   html += `<h2>Tasks</h2><div class="card">`;
@@ -819,18 +884,41 @@ document.addEventListener('click', (e) => {
     const amount = parseFloat(document.getElementById('mf-amount').value);
     const date = document.getElementById('mf-date').value;
     if (!(amount > 0) || !date) { alert('Enter a date and an amount.'); return; }
-    S.ledger.push({
+    const entry = {
       id: uid(), date, type: el.dataset.type, amount: Math.round(amount * 100) / 100,
       who: document.getElementById('mf-who').value.trim(),
       category: document.getElementById('mf-cat').value,
       note: document.getElementById('mf-note').value.trim(),
       jobId: document.getElementById('mf-job').value || null,
-    });
+    };
+    const receiptData = nav.moneyForm && nav.moneyForm.receiptData;
+    S.ledger.push(entry);
     nav.moneyForm = null; save();
+    if (receiptData && session) {
+      uploadReceipt(entry.id, receiptData)
+        .then(path => { entry.receipt = path; save(); render(); })
+        .catch(() => alert('The entry saved, but the receipt photo failed to upload. Try re-adding it later.'));
+    }
+  }
+  else if (act === 'receipt') {
+    nav.receiptJob = el.dataset.job || null;
+    document.getElementById('receipt-file').click();
+    return;
+  }
+  else if (act === 'view-receipt') {
+    const entry = S.ledger.find(x => x.id === el.dataset.id);
+    if (entry && entry.receipt) showReceipt(entry.receipt);
+    return;
+  }
+  else if (act === 'close-receipt') {
+    const ov = document.getElementById('receipt-overlay');
+    if (ov) ov.remove();
+    return;
   }
   else if (act === 'del-ledger') {
     const e = S.ledger.find(x => x.id === el.dataset.id);
     if (e && confirm(`Delete ${e.type} of ${fmt$(e.amount, true)}${e.who ? ' (' + e.who + ')' : ''}?`)) {
+      if (e.receipt && session) sb.storage.from('receipts').remove([e.receipt]).then(() => {}, () => {});
       S.ledger = S.ledger.filter(x => x.id !== el.dataset.id); save();
     } else return;
   }
@@ -925,6 +1013,12 @@ document.addEventListener('change', (e) => {
   if (e.target.id === 'set-taxrate') {
     const v = parseFloat(e.target.value);
     if (v >= 0 && v < 50) { S.settings.taxRate = v / 100; save(); render(); }
+  }
+  if (e.target.id === 'receipt-file' && e.target.files[0]) {
+    const f = e.target.files[0];
+    e.target.value = '';
+    processReceipt(f);
+    return;
   }
   if (e.target.id === 'import-file' && e.target.files[0]) {
     const fr = new FileReader();
