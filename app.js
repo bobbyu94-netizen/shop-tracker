@@ -348,9 +348,11 @@ function cashFlowSvg() {
 }
 function entryFormHtml(f) {
   const cats = f.type === 'income' ? INCOME_CATS : EXPENSE_CATS;
-  const jobOpts = S.jobs.map(j => `<option value="${j.id}" ${f.jobId === j.id ? 'selected' : ''}>${esc(j.name)}</option>`).join('');
+  const selJob = f.prefillJob !== undefined ? f.prefillJob : f.jobId;
+  const jobOpts = S.jobs.map(j => `<option value="${j.id}" ${selJob === j.id ? 'selected' : ''}>${esc(j.name)}</option>`).join('');
+  const title = f.editId ? (f.type === 'income' ? 'Edit income' : 'Edit expense') : (f.type === 'income' ? 'Record income' : 'Add expense');
   return `<div class="card form-card">
-    <b>${f.type === 'income' ? 'Record income' : 'Add expense'}</b>
+    <b>${title}</b>
     ${f.receiptData ? `<div class="row mt"><img src="${f.receiptData}" class="receipt-thumb"><div class="muted small">${esc(f.aiNote || 'Check what was read off the receipt, then save.')}</div></div>` : ''}
     <div class="form-grid">
       <input type="date" id="mf-date" value="${f.prefillDate || todayStr()}">
@@ -482,22 +484,21 @@ function renderMoney() {
     <button class="btn tiny" data-act="money-form" data-type="expense">+ Expense</button>
     ${session ? `<button class="btn tiny primary" data-act="receipt">&#128247; Receipt</button>` : ''}
   </div>`;
-  const entries = [...S.ledger].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 15);
+  const entries = [...S.ledger].sort((a, b) => b.date.localeCompare(a.date));
   if (!entries.length) html += `<div class="card flat">No entries yet. Add income and expenses as they happen — profit per job comes free.</div>`;
   else {
-    html += `<div class="card">`;
+    html += `<div class="muted small" style="margin:0 2px 6px">Tap an entry to edit it.</div><div class="card">`;
     for (const e of entries) {
       const job = e.jobId ? jobById(e.jobId) : null;
       html += `<div class="seg">
-        <div class="seg-time"><b>${e.date.slice(5).replace('-', '/')}</b><br>${esc(e.category || '')}</div>
-        <div class="grow"><div>${esc(e.who || '')}${e.note ? ` <span class="muted small">— ${esc(e.note)}</span>` : ''}</div>
+        <div class="seg-time" data-act="edit-ledger" data-id="${e.id}"><b>${e.date.slice(5).replace('-', '/')}</b><br>${esc(e.category || '')}</div>
+        <div class="grow" data-act="edit-ledger" data-id="${e.id}"><div>${esc(e.who || '')}${e.note ? ` <span class="muted small">— ${esc(e.note)}</span>` : ''}</div>
         ${job ? `<div class="muted small">&#128204; ${esc(job.name)}</div>` : ''}</div>
-        <b class="${e.type === 'income' ? 'green' : 'red'}">${e.type === 'income' ? '+' : '−'}${fmt$(e.amount, true)}</b>
+        <b class="${e.type === 'income' ? 'green' : 'red'}" data-act="edit-ledger" data-id="${e.id}">${e.type === 'income' ? '+' : '−'}${fmt$(e.amount, true)}</b>
         ${e.receipt && session ? `<button class="icon-btn" data-act="view-receipt" data-id="${e.id}" title="View receipt">&#128206;</button>` : ''}
         <button class="icon-btn" data-act="del-ledger" data-id="${e.id}">&#10005;</button>
       </div>`;
     }
-    if (S.ledger.length > 15) html += `<div class="muted small mt" style="text-align:center">Showing 15 of ${S.ledger.length} entries</div>`;
     html += `</div>`;
   }
   return html;
@@ -880,24 +881,41 @@ document.addEventListener('click', (e) => {
     nav.moneyForm = { type: el.dataset.type, jobId: el.dataset.job || null, jobView: el.dataset.job || null };
   }
   else if (act === 'money-cancel') { nav.moneyForm = null; }
+  else if (act === 'edit-ledger') {
+    const e = S.ledger.find(x => x.id === el.dataset.id);
+    if (!e) return;
+    nav.moneyForm = {
+      editId: e.id, type: e.type,
+      prefillDate: e.date, prefillAmount: e.amount.toFixed(2), prefillWho: e.who || '',
+      prefillCat: e.category || '', prefillNote: e.note || '', prefillJob: e.jobId || '',
+    };
+  }
   else if (act === 'money-save') {
     const amount = parseFloat(document.getElementById('mf-amount').value);
     const date = document.getElementById('mf-date').value;
     if (!(amount > 0) || !date) { alert('Enter a date and an amount.'); return; }
-    const entry = {
-      id: uid(), date, type: el.dataset.type, amount: Math.round(amount * 100) / 100,
+    const fields = {
+      date, amount: Math.round(amount * 100) / 100,
       who: document.getElementById('mf-who').value.trim(),
       category: document.getElementById('mf-cat').value,
       note: document.getElementById('mf-note').value.trim(),
       jobId: document.getElementById('mf-job').value || null,
     };
-    const receiptData = nav.moneyForm && nav.moneyForm.receiptData;
-    S.ledger.push(entry);
-    nav.moneyForm = null; save();
-    if (receiptData && session) {
-      uploadReceipt(entry.id, receiptData)
-        .then(path => { entry.receipt = path; save(); render(); })
-        .catch(() => alert('The entry saved, but the receipt photo failed to upload. Try re-adding it later.'));
+    const editId = nav.moneyForm && nav.moneyForm.editId;
+    if (editId) {
+      const e = S.ledger.find(x => x.id === editId);
+      if (e) Object.assign(e, fields);
+      nav.moneyForm = null; save();
+    } else {
+      const entry = Object.assign({ id: uid(), type: el.dataset.type }, fields);
+      const receiptData = nav.moneyForm && nav.moneyForm.receiptData;
+      S.ledger.push(entry);
+      nav.moneyForm = null; save();
+      if (receiptData && session) {
+        uploadReceipt(entry.id, receiptData)
+          .then(path => { entry.receipt = path; save(); render(); })
+          .catch(() => alert('The entry saved, but the receipt photo failed to upload. Try re-adding it later.'));
+      }
     }
   }
   else if (act === 'receipt') {
