@@ -16,7 +16,7 @@ const DEFAULT_STATE = {
     taxRate: 0.07,                   // FL sales tax — mirrors KRSC hub default
   },
   icsKey: null,      // secret in the calendar-feed URL
-  jobs: [],          // {id, name, status:'active'|'pending'|'done', quotedPrice, tasks:[{id,name,estHours,done}]}
+  jobs: [],          // {id, name, kind:'client'|'shop', status:'active'|'pending'|'done', quotedPrice, tasks:[{id,name,estHours,done}]}
   timeEntries: [],   // {id, taskId, jobId, start(ms), stop(ms|null)}
   blocks: [],        // {date:'YYYY-MM-DD', portion:'full'|'morning'|'afternoon'}
   adminTodos: [],    // {id, text, done}
@@ -474,6 +474,7 @@ function renderMoney() {
   </div>`;
 
   const moneyJobs = S.jobs.filter(j => {
+    if (j.kind === 'shop') return false;   // shop projects have no revenue/labor target
     const m = jobMoney(j);
     return j.quotedPrice || m.collected || m.materials || jobActualHours(j) > 0.01;
   });
@@ -713,18 +714,29 @@ function renderWeek(sched) {
 }
 
 function renderJobs(sched) {
-  let html = `<button class="btn primary wide" data-act="add-job" style="margin:0 0 12px">+ New Job</button>`;
+  let html = `<div class="blockbtns" style="margin:0 0 12px">
+    <button class="btn primary grow" data-act="add-job">+ New Job</button>
+    <button class="btn grow" data-act="add-shop">+ Shop Project</button>
+  </div>`;
   if (!S.jobs.length) html += `<div class="card flat">No jobs yet. Tap “New Job” — you can load your standard cabinet steps automatically.</div>`;
   const order = { active: 0, pending: 1, done: 2 };
   const jobs = [...S.jobs].sort((a, b) => order[a.status] - order[b.status]);
+  const activeIds = S.jobs.filter(j => j.status === 'active').map(j => j.id);
   for (const j of jobs) {
     const est = jobEstHours(j), act = jobActualHours(j);
     const doneCt = j.tasks.filter(t => t.done).length;
     const fin = sched.finishDates[j.id];
     const pct = est ? Math.min(100, Math.round(act / est * 100)) : 0;
+    const ai = activeIds.indexOf(j.id);
+    const reorder = ai >= 0 && activeIds.length > 1
+      ? `<button class="icon-btn" data-act="job-up" data-job="${j.id}" ${ai === 0 ? 'disabled' : ''}>&#8593;</button>
+         <button class="icon-btn" data-act="job-down" data-job="${j.id}" ${ai === activeIds.length - 1 ? 'disabled' : ''}>&#8595;</button>`
+      : '';
     html += `<div class="card" data-act="open-job" data-job="${j.id}">
       <div class="row">
         <div class="grow"><b>${esc(j.name)}</b></div>
+        ${reorder}
+        ${j.kind === 'shop' ? `<span class="pill shop">shop</span>` : ''}
         <span class="pill ${j.status}">${j.status}</span>
       </div>
       <div class="muted small mt">${doneCt}/${j.tasks.length} tasks · est ${fmtH(est)} · actual ${fmtH(act)}
@@ -746,15 +758,26 @@ function renderJobDetail(sched) {
     <div class="row"><div class="grow big">${esc(j.name)}</div><span class="pill ${j.status}">${j.status}</span></div>
     <div class="muted small mt">est ${fmtH(est)} · actual ${fmtH(act)}${j.status === 'active' && fin ? ` · projected finish <span class="blue">${prettyDate(fin)}</span>` : ''}</div>
     <div class="blockbtns">
-      ${j.status === 'pending' ? `<button class="btn tiny go" data-act="job-status" data-job="${j.id}" data-status="active">Deposit received &mdash; start job</button>` : ''}
+      ${j.kind !== 'shop' && j.status === 'pending' ? `<button class="btn tiny go" data-act="job-status" data-job="${j.id}" data-status="active">Deposit received &mdash; start job</button>` : ''}
       ${j.status === 'active' ? `<button class="btn tiny" data-act="job-status" data-job="${j.id}" data-status="done">Mark complete</button>
-        <button class="btn tiny ghost" data-act="job-status" data-job="${j.id}" data-status="pending">Back to pending</button>` : ''}
+        ${j.kind !== 'shop' ? `<button class="btn tiny ghost" data-act="job-status" data-job="${j.id}" data-status="pending">Back to pending</button>` : ''}` : ''}
       ${j.status === 'done' ? `<button class="btn tiny" data-act="job-status" data-job="${j.id}" data-status="active">Reopen</button>` : ''}
       <button class="btn tiny ghost red" data-act="del-job" data-job="${j.id}">Delete</button>
     </div>
   </div>`;
   const m = jobMoney(j);
-  html += `<h2>Money</h2><div class="card">
+  html += j.kind === 'shop'
+    ? `<h2>Materials</h2><div class="card">
+    <div class="money-grid">
+      <div><span class="muted small">Materials cost</span><br><span class="red">${fmt$(m.materials, true)}</span></div>
+    </div>
+    ${nav.receiptBusy && nav.receiptJob === j.id ? `<div class="muted small mt">&#128247; Reading receipt&hellip;</div>`
+      : nav.moneyForm && nav.moneyForm.jobView === j.id ? entryFormHtml(nav.moneyForm) : `<div class="blockbtns">
+      <button class="btn tiny" data-act="money-form" data-type="expense" data-job="${j.id}">+ Materials</button>
+      ${session ? `<button class="btn tiny primary" data-act="receipt" data-job="${j.id}">&#128247; Receipt</button>` : ''}
+    </div>`}
+  </div>`
+    : `<h2>Money</h2><div class="card">
     <div class="money-grid">
       <div data-act="edit-quoted" data-job="${j.id}"><span class="muted small">Quoted &#9998;</span><br>${j.quotedPrice ? fmt$(j.quotedPrice, true) : '—'}</div>
       <div><span class="muted small">Collected</span><br><span class="green">${fmt$(m.collected, true)}</span></div>
@@ -889,8 +912,23 @@ document.addEventListener('click', (e) => {
   else if (act === 'add-job') {
     const name = prompt('Job name (customer / project):');
     if (!name) return;
-    const j = { id: uid(), name: name.trim(), status: 'active', tasks: [] };
+    const j = { id: uid(), name: name.trim(), kind: 'client', status: 'active', tasks: [] };
     S.jobs.push(j); nav.jobId = j.id; save();
+  }
+  else if (act === 'add-shop') {
+    const name = prompt('Shop project name:');
+    if (!name) return;
+    const j = { id: uid(), name: name.trim(), kind: 'shop', status: 'active', tasks: [] };
+    S.jobs.push(j); nav.jobId = j.id; save();
+  }
+  else if (act === 'job-up' || act === 'job-down') {
+    const ids = S.jobs.filter(x => x.status === 'active').map(x => x.id);
+    const pos = ids.indexOf(el.dataset.job);
+    const npos = act === 'job-up' ? pos - 1 : pos + 1;
+    if (npos < 0 || npos >= ids.length) return;
+    const i = S.jobs.findIndex(x => x.id === el.dataset.job);
+    const ni = S.jobs.findIndex(x => x.id === ids[npos]);
+    [S.jobs[i], S.jobs[ni]] = [S.jobs[ni], S.jobs[i]]; save();
   }
   else if (act === 'open-job') { nav.jobId = el.dataset.job; }
   else if (act === 'back-jobs') { nav.jobId = null; }
