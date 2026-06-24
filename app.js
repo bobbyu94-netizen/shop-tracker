@@ -589,7 +589,8 @@ function timerCard() {
     <div class="row"><div class="grow"><b>${esc(name)}</b></div></div>
     <div class="row mt">
       <div class="grow timer-elapsed green" id="elapsed">${fmtElapsed(Date.now() - e.start)}</div>
-      <button class="btn stop" data-act="punch-out">Punch Out</button>
+      <button class="btn ghost tiny" data-act="punch-out">Pause</button>
+      <button class="btn stop" data-act="punch-out-done">Done</button>
     </div>
   </div>`;
 }
@@ -804,6 +805,7 @@ function renderJobDetail(sched) {
       </div>
       <div class="task-actions">
         ${running ? '<span class="pill active">On</span>' : (t.done ? '' : `<button class="icon-btn green" data-act="punch-in" data-task="${t.id}" title="Punch in">&#9654;</button>`)}
+        ${a > 0.005 && !running ? `<button class="icon-btn" data-act="reset-task" data-task="${t.id}" title="Reset time">&#8635;</button>` : ''}
         <button class="icon-btn" data-act="task-up" data-task="${t.id}" ${i === 0 ? 'disabled' : ''}>&#8593;</button>
         <button class="icon-btn" data-act="task-down" data-task="${t.id}" ${i === j.tasks.length - 1 ? 'disabled' : ''}>&#8595;</button>
         <button class="icon-btn" data-act="del-task" data-task="${t.id}">&#10005;</button>
@@ -890,6 +892,16 @@ document.addEventListener('click', (e) => {
 
   else if (act === 'punch-in') { punchIn(el.dataset.task); }
   else if (act === 'punch-out') { punchOut(); }
+  else if (act === 'punch-out-done') {
+    const a = activeEntry();
+    if (a) { punchOut(); const found = taskById(a.taskId); if (found) { found.task.done = true; save(); } }
+  }
+  else if (act === 'reset-task') {
+    const found = taskById(el.dataset.task); if (!found) return;
+    if (!confirm(`Reset all logged time on "${found.task.name}"? This can't be undone.`)) return;
+    S.timeEntries = S.timeEntries.filter(e => e.taskId !== found.task.id);
+    found.task.done = false; save();
+  }
 
   else if (act === 'toggle-done') {
     const found = taskById(el.dataset.task);
