@@ -358,6 +358,7 @@ function entryFormHtml(f) {
       <input type="date" id="mf-date" value="${f.prefillDate || todayStr()}">
       <input type="number" id="mf-amount" placeholder="$ amount" inputmode="decimal" step="0.01" value="${f.prefillAmount || ''}">
       <input type="text" id="mf-who" placeholder="${f.type === 'income' ? 'Customer' : 'Vendor'}" value="${esc(f.prefillWho || '')}">
+      ${f.type === 'expense' ? `<label style="grid-column:1/-1;display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="mf-return" ${f.isReturn ? 'checked' : ''}> Return / Refund (reduces expenses)</label>` : ''}
       <select id="mf-cat">${cats.map((c, i) => `<option ${(f.prefillCat ? c === f.prefillCat : i === 0) ? 'selected' : ''}>${c}</option>`).join('')}</select>
       <select id="mf-job"><option value="">No job (general)</option>${jobOpts}</select>
       <input type="text" id="mf-note" placeholder="Description" value="${esc(f.prefillNote || '')}">
@@ -524,7 +525,7 @@ function renderMoney() {
         <div class="seg-time" data-act="edit-ledger" data-id="${e.id}"><b>${e.date.slice(5).replace('-', '/')}</b><br>${esc(e.category || '')}</div>
         <div class="grow" data-act="edit-ledger" data-id="${e.id}"><div>${esc(e.who || '')}${e.note ? ` <span class="muted small">— ${esc(e.note)}</span>` : ''}</div>
         ${job ? `<div class="muted small">&#128204; ${esc(job.name)}</div>` : ''}</div>
-        <b class="${e.type === 'income' ? 'green' : 'red'}" data-act="edit-ledger" data-id="${e.id}">${e.type === 'income' ? '+' : '−'}${fmt$(e.amount, true)}</b>
+        <b class="${e.type === 'income' ? 'green' : e.amount < 0 ? 'green' : 'red'}" data-act="edit-ledger" data-id="${e.id}">${e.type === 'income' ? '+' : e.amount < 0 ? '+' : '−'}${fmt$(Math.abs(e.amount), true)}${e.type === 'expense' && e.amount < 0 ? '<span class="muted small"> refund</span>' : ''}</b>
         ${e.receipt && session ? `<button class="icon-btn" data-act="view-receipt" data-id="${e.id}" title="View receipt">&#128206;</button>` : ''}
         <button class="icon-btn" data-act="del-ledger" data-id="${e.id}">&#10005;</button>
       </div>`;
@@ -965,7 +966,7 @@ document.addEventListener('click', (e) => {
     if (!e) return;
     nav.moneyForm = {
       editId: e.id, type: e.type,
-      prefillDate: e.date, prefillAmount: e.amount.toFixed(2), prefillWho: e.who || '',
+      prefillDate: e.date, prefillAmount: Math.abs(e.amount).toFixed(2), isReturn: e.type === 'expense' && e.amount < 0, prefillWho: e.who || '',
       prefillCat: e.category || '', prefillNote: e.note || '', prefillJob: e.jobId || '',
     };
   }
@@ -973,8 +974,9 @@ document.addEventListener('click', (e) => {
     const amount = parseFloat(document.getElementById('mf-amount').value);
     const date = document.getElementById('mf-date').value;
     if (!(amount > 0) || !date) { alert('Enter a date and an amount.'); return; }
+    const isReturn = el.dataset.type === 'expense' && document.getElementById('mf-return')?.checked;
     const fields = {
-      date, amount: Math.round(amount * 100) / 100,
+      date, amount: isReturn ? -Math.round(amount * 100) / 100 : Math.round(amount * 100) / 100,
       who: document.getElementById('mf-who').value.trim(),
       category: document.getElementById('mf-cat').value,
       note: document.getElementById('mf-note').value.trim(),
