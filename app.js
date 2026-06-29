@@ -350,7 +350,9 @@ function entryFormHtml(f) {
   const cats = f.type === 'income' ? INCOME_CATS : EXPENSE_CATS;
   const selJob = f.prefillJob !== undefined ? f.prefillJob : f.jobId;
   const jobOpts = S.jobs.map(j => `<option value="${j.id}" ${selJob === j.id ? 'selected' : ''}>${esc(j.name)}</option>`).join('');
-  const title = f.editId ? (f.type === 'income' ? 'Edit income' : 'Edit expense') : (f.type === 'income' ? 'Record income' : 'Add expense');
+  const title = f.editId
+    ? (f.type === 'income' ? 'Edit income' : f.isReturn ? 'Edit refund' : 'Edit expense')
+    : (f.type === 'income' ? 'Record income' : f.isReturn ? 'Record refund' : 'Add expense');
   return `<div class="card form-card">
     <b>${title}</b>
     ${f.receiptData ? `<div class="row mt"><img src="${f.receiptData}" class="receipt-thumb"><div class="muted small">${esc(f.aiNote || 'Check what was read off the receipt, then save.')}</div></div>` : ''}
@@ -358,11 +360,11 @@ function entryFormHtml(f) {
       <input type="date" id="mf-date" value="${f.prefillDate || todayStr()}">
       <input type="number" id="mf-amount" placeholder="$ amount" inputmode="decimal" step="0.01" value="${f.prefillAmount || ''}">
       <input type="text" id="mf-who" placeholder="${f.type === 'income' ? 'Customer' : 'Vendor'}" value="${esc(f.prefillWho || '')}">
-      ${f.type === 'expense' ? `<label style="grid-column:1/-1;display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" id="mf-return" ${f.isReturn ? 'checked' : ''}> Return / Refund (reduces expenses)</label>` : ''}
       <select id="mf-cat">${cats.map((c, i) => `<option ${(f.prefillCat ? c === f.prefillCat : i === 0) ? 'selected' : ''}>${c}</option>`).join('')}</select>
       <select id="mf-job"><option value="">No job (general)</option>${jobOpts}</select>
       <input type="text" id="mf-note" placeholder="Description" value="${esc(f.prefillNote || '')}">
     </div>
+    ${f.type === 'expense' ? `<button class="btn tiny wide ${f.isReturn ? 'go' : 'ghost'}" data-act="toggle-return" style="margin-top:8px">&#8617; ${f.isReturn ? 'Return / Refund — ON' : 'Mark as Return / Refund'}</button>` : ''}
     <div class="blockbtns">
       <button class="btn tiny primary" data-act="money-save" data-type="${f.type}">Save</button>
       <button class="btn tiny ghost" data-act="money-cancel">Cancel</button>
@@ -891,6 +893,9 @@ document.addEventListener('click', (e) => {
     session = null; localOnly = true; cloudStatus = 'local'; cloudStamp = null;
   }
 
+  else if (act === 'toggle-return') {
+    if (nav.moneyForm) { nav.moneyForm.isReturn = !nav.moneyForm.isReturn; render(); } return;
+  }
   else if (act === 'punch-in') { punchIn(el.dataset.task); }
   else if (act === 'punch-out') { punchOut(); }
   else if (act === 'punch-out-done') {
@@ -974,7 +979,7 @@ document.addEventListener('click', (e) => {
     const amount = parseFloat(document.getElementById('mf-amount').value);
     const date = document.getElementById('mf-date').value;
     if (!(amount > 0) || !date) { alert('Enter a date and an amount.'); return; }
-    const isReturn = el.dataset.type === 'expense' && document.getElementById('mf-return')?.checked;
+    const isReturn = el.dataset.type === 'expense' && nav.moneyForm?.isReturn;
     const fields = {
       date, amount: isReturn ? -Math.round(amount * 100) / 100 : Math.round(amount * 100) / 100,
       who: document.getElementById('mf-who').value.trim(),
